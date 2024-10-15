@@ -1,5 +1,9 @@
 import base64
 from dotenv import load_dotenv
+import folium
+from streamlit_folium import st_folium
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import os
 import pandas as pd
 from pathlib import Path
@@ -8,7 +12,8 @@ import plotly.graph_objects as go
 # import plotly.express as px
 import requests
 import streamlit as st
-from streamlit_plotly_events import plotly_events
+import time
+import webcolors
 
 
 
@@ -24,6 +29,21 @@ st.set_page_config(page_title="WNBA Player Analytics Dashboard && AI Insights", 
 # Enhanced Custom CSS with gradient background, hover effects, and sticky footer
 st.markdown("""
 <style>
+    [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
+        background-color: #2C3E50;
+        padding: 20px;
+        border-radius: 10px;
+        margin: 10px 0;
+    }
+    
+    [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"]:nth-of-type(2n) {
+        background-color: #34495E;
+    }
+    
+    .main-content {
+        display: flex;
+        justify-content: space-between;
+    }
     body {
         background: linear-gradient(120deg, #2c3e50 0%, #3498db 100%);
         color: white;
@@ -62,8 +82,7 @@ st.markdown("""
         border-radius: 10px;
         padding: 10px;
     }
-    .chart-section, .stats-section, .player-info-section, .player-stats-section {
-        background-color: rgba(52, 73, 94, 0.7);
+    .chart-section, .stats-section, .map-section, .filtered-data-section, .player-comparison-section {
         border-radius: 10px;
         padding: 20px;
         margin-bottom: 20px;
@@ -74,11 +93,64 @@ st.markdown("""
     .stats-section {
         background-color: rgba(192, 57, 43, 0.7);
     }
-    .player-info-section {
-        background-color: rgba(39, 174, 96, 0.7);
+    .player-comparison-section {
+        background-color: rgba(220, 20, 60, 0.2);
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
     }
-    .player-stats-section {
-        background-color: rgba(142, 68, 173, 0.7);
+    .map-section {
+        background-color: rgba(255, 69, 0, 0.1);
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+
+    .map-section .stfolium {
+        width: 100%;
+        height: 400px;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+            
+    .filtered-data-section {
+        background-color: #4C51BF;
+        border-radius: 10px;
+        padding: 20px;
+        margin-top: 20px;
+        border: 2px solid #60A5FA;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    /* AI Insights Section Styling */
+    .ai-insights-section {
+        background-color: #4B5563;
+        border-radius: 10px;
+        padding: 20px;
+        margin-top: 20px;
+        border: 2px solid #60A5FA;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Custom button styling */
+    button {
+        display: inline-block;
+        width: 500%;
+        padding: 12px 20px;
+        font-size: 40px;
+        font-weight: bold;
+        color: white;
+        background-color: #3B82F6;
+        border: none;
+        border-radius: 8px;
+        box-shadow: 0 4px 10px rgba(59, 130, 246, 0.5);  /* Enhanced shadow */
+        text-align: center;
+        text-decoration: none;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -198,8 +270,17 @@ team_colors = {
     'LAS': '#702F8A',  # Purple for LA Sparks
     'CHI': '#418FDE',  # Light Blue for Chicago Sky
     'WAS': '#C8102E'
-    # Add more teams and their respective colors
 }
+
+# Function to get team abbreviation from full name
+def get_team_abbr(team_name):
+    abbr_map = {
+        'Atlanta Dream': 'ATL', 'Chicago Sky': 'CHI', 'Connecticut Sun': 'CON',
+        'Dallas Wings': 'DAL', 'Indiana Fever': 'IND', 'Las Vegas Aces': 'LVA',
+        'Los Angeles Sparks': 'LAS', 'Minnesota Lynx': 'MIN', 'New York Liberty': 'NYL',
+        'Phoenix Mercury': 'PHO', 'Seattle Storm': 'SEA', 'Washington Mystics': 'WAS'
+    }
+    return abbr_map.get(team_name, '')
 selected_teams = st.sidebar.multiselect('Team', teams, teams)
 # Apply the colors to the teams in the multiselect
 colorize_multiselect_options(teams, team_colors)
@@ -207,14 +288,117 @@ colorize_multiselect_options(teams, team_colors)
 positions = ['C', 'F', 'G', 'F-G', 'C-F']
 selected_positions = st.sidebar.multiselect('Position', positions, positions)
 
-# Data filtering
+# First, remove the duplicate entry for Celeste Taylor
+player_data = player_data[~((player_data['Player'] == 'Celeste Taylor') & (player_data['Team'] == 'Connecticut Sun'))]
+
+# Then apply the data filters
 filtered_data = player_data[
     (player_data.Team.isin(selected_teams)) & 
     (player_data.Pos.isin(selected_positions))
 ].sort_values(by='PTS', ascending=False)  # Sort by points
 
+
 # Move the pie chart above the displayed data
 st.subheader("Top 5 Scorers (Points per Game)")
+
+def closest_color(rgb):
+    colors = {
+        'red': (255, 0, 0), 'blue': (0, 0, 255), 'green': (0, 128, 0),
+        'purple': (128, 0, 128), 'orange': (255, 165, 0),
+        'pink': (255, 192, 203), 'black': (0, 0, 0), 'white': (255, 255, 255),
+        'gray': (128, 128, 128), 'lightblue': (173, 216, 230), 'lightgreen': (144, 238, 144),
+        'lightred': (255, 102, 102), 'beige': (245, 245, 220), 'darkblue': (0, 0, 139),
+        'darkgreen': (0, 100, 0), 'darkpurple': (48, 25, 52), 'cadetblue': (95, 158, 160),
+        'darkred': (139, 0, 0), 'lightgray': (211, 211, 211)
+    }
+    return min(colors, key=lambda color: sum((a-b)**2 for a, b in zip(colors[color], rgb)))
+
+# Fallback coordinates for WNBA teams
+fallback_coordinates = {
+    'Atlanta Dream': (33.7490, -84.3880),
+    'Chicago Sky': (41.8781, -87.6298),
+    'Connecticut Sun': (41.4901, -72.0992),
+    'Dallas Wings': (32.7355, -97.1080),
+    'Indiana Fever': (39.7684, -86.1581),
+    'Las Vegas Aces': (36.1699, -115.1398),
+    'Los Angeles Sparks': (34.0522, -118.2437),
+    'Minnesota Lynx': (44.9778, -93.2650),
+    'New York Liberty': (40.6782, -73.9442),
+    'Phoenix Mercury': (33.4484, -112.0740),
+    'Seattle Storm': (47.6062, -122.3321),
+    'Washington Mystics': (38.9072, -77.0369)
+}
+
+def geocode_with_retry(geolocator, city, max_retries=3):
+    for _ in range(max_retries):
+        try:
+            return geolocator.geocode(city)
+        except (GeocoderTimedOut, GeocoderServiceError):
+            time.sleep(1)
+    return None
+
+def create_wnba_map():
+    # WNBA teams, their locations, and home page URLs
+    wnba_teams = {
+        'Atlanta Dream': ('Atlanta, GA', 'https://dream.wnba.com/'),
+        'Chicago Sky': ('Chicago, IL', 'https://sky.wnba.com/'),
+        'Connecticut Sun': ('Uncasville, CT', 'https://sun.wnba.com/'),
+        'Dallas Wings': ('Arlington, TX', 'https://wings.wnba.com/'),
+        'Indiana Fever': ('Indianapolis, IN', 'https://fever.wnba.com/'),
+        'Las Vegas Aces': ('Las Vegas, NV', 'https://aces.wnba.com/'),
+        'Los Angeles Sparks': ('Los Angeles, CA', 'https://sparks.wnba.com/'),
+        'Minnesota Lynx': ('Minneapolis, MN', 'https://lynx.wnba.com/'),
+        'New York Liberty': ('Brooklyn, NY', 'https://liberty.wnba.com/'),
+        'Phoenix Mercury': ('Phoenix, AZ', 'https://mercury.wnba.com/'),
+        'Seattle Storm': ('Seattle, WA', 'https://storm.wnba.com/'),
+        'Washington Mystics': ('Washington, D.C.', 'https://mystics.wnba.com/')
+    }
+
+    # Create a map centered on the United States
+    m = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
+
+    # Geocoding to get coordinates
+    geolocator = Nominatim(user_agent="wnba_app")
+    # Team name to abbreviation mapping
+    team_abbr = {
+        'Atlanta Dream': 'ATL', 'Chicago Sky': 'CHI', 'Connecticut Sun': 'CON',
+        'Dallas Wings': 'DAL', 'Indiana Fever': 'IND', 'Las Vegas Aces': 'LVA',
+        'Los Angeles Sparks': 'LAS', 'Minnesota Lynx': 'MIN', 'New York Liberty': 'NYL',
+        'Phoenix Mercury': 'PHO', 'Seattle Storm': 'SEA', 'Washington Mystics': 'WAS'
+    }
+
+    # Add markers for each team
+    for team, (city, url) in wnba_teams.items():
+        try:
+            location = geocode_with_retry(geolocator, city)
+            if location is None:
+                # Use fallback coordinates if geocoding fails
+                lat, lon = fallback_coordinates[team]
+            else:
+                lat, lon = location.latitude, location.longitude
+            # Get team abbreviation and color
+            abbr = team_abbr.get(team, 'ATL')  # Default to ATL if not found
+            hex_color = team_colors.get(abbr, '#000000')  # Default to black if color not found
+            rgb = webcolors.hex_to_rgb(hex_color)
+            closest_folium_color = closest_color(rgb)
+            
+            # Create popup HTML with team info and link
+            popup_html = f"""
+            <b>{team}</b><br>
+            {city}<br>
+            <a href="{url}" target="_blank">Visit Team Website</a>
+            """
+            
+            folium.Marker(
+                [lat, lon],
+                popup=folium.Popup(popup_html, max_width=300),
+                tooltip=team,
+                icon=folium.Icon(color=closest_folium_color, icon='basketball', prefix='fa')
+            ).add_to(m)
+        except Exception as e:
+            st.warning(f"Couldn't add marker for {team}: {str(e)}")
+
+    return m
 
 # Initialize session state for selected player
 if 'selected_player' not in st.session_state:
@@ -224,92 +408,110 @@ if 'selected_player' not in st.session_state:
 def update_selected_player(player):
     st.session_state.selected_player = player
 
+def clean_percentage(value):
+    if isinstance(value, str):
+        return float(value.strip('%')) / 100
+    return value
+
+stat_options = {
+    "Points": "PTS",
+    "Assists": "AST",
+    "Rebounds": "TRB",
+    "Steals": "STL",
+    "Blocks": "BLK",
+    "Field Goal %": "FG%",
+    "3-Point %": "3P%"
+}
+
 # Create a 2x2 grid layout
 col1, col2 = st.columns(2)
 col3, col4 = st.columns(2)
 
 with col1:
     st.markdown('<div class="chart-section">', unsafe_allow_html=True)
-    st.subheader("Top 5 Scorers (Points per Game)")
-    # Chart type selector
+    st.markdown("Player Statistics")
+    # Add dropdown for stat selection
+    selected_stat = st.selectbox("Select Statistic", list(stat_options.keys()))
+    stat_column = stat_options[selected_stat]
+    
+    st.subheader(f"Top Players ({selected_stat})")
     chart_type = st.radio("Select chart type:", ("Pie Chart", "Bar Chart"))
 
-    filtered_data['PTS'] = pd.to_numeric(filtered_data['PTS'], errors='coerce')
-    top_scorers = filtered_data.nlargest(5, "PTS")
+    # Convert the selected statistic to numeric values
+    filtered_data[stat_column] = pd.to_numeric(filtered_data[stat_column], errors='coerce')
+
+    # Move the slider here, before creating top_players
+    max_stat_value = filtered_data[stat_column].max()
+    min_stat_value = st.slider(f"Minimum {selected_stat}", 
+                               min_value=0.0, 
+                               max_value=float(max_stat_value), 
+                               value=0.0,
+                               step=0.1)
+
+    # Filter the data based on the slider value
+    filtered_data = filtered_data[filtered_data[stat_column] >= min_stat_value]
+
+    # Get top 5 players after filtering
+    top_players = filtered_data.nlargest(5, stat_column)
     
-    hover_text = [f"{player}<br>Team: {team}<br>Position: {pos}" 
-                  for player, team, pos in zip(top_scorers['Player'], top_scorers['Team'], top_scorers['Pos'])]
+    hover_text = [f"{player}<br>Team: {team}<br>Position: {pos}<br>{selected_stat}: {value:.2f}" 
+                  for player, team, pos, value in zip(top_players['Player'], top_players['Team'], top_players['Pos'], top_players[stat_column])]
 
-    # Get team colors for the top scorers
-    colors = [team_colors.get(team, '#000000') for team in top_scorers['Team']]
+    colors = [team_colors.get(team, '#000000') for team in top_players['Team']]
 
-    if chart_type == "Pie Chart":
+    if chart_type == "Bar Chart":
+        fig = go.Figure(data=[go.Bar(
+            x=top_players['Player'],
+            y=top_players[stat_column],
+            marker_color=colors,  # Use team colors for bars
+            text=top_players[stat_column],
+            textposition='auto',
+        )])
+        fig.update_layout(
+            title=f"Top 5 Players - {selected_stat}",
+            xaxis_title="Player",
+            yaxis_title=selected_stat,
+        )
+    else:  # Pie Chart
         fig = go.Figure(data=[go.Pie(
-            labels=top_scorers['Player'],
-            values=top_scorers['PTS'],
-            hovertemplate="<b>%{label}</b><br>" +
-                          "Points per Game: %{value:.1f}<br>" +
-                          "%{text}" +
-                          "<extra></extra>",
-            text=hover_text,
+            labels=top_players['Player'],
+            values=top_players[stat_column],
+            marker=dict(colors=colors),  # Use team colors for pie slices
+            textposition='inside',
             textinfo='label+percent',
             insidetextorientation='radial',
-            marker=dict(colors=colors)  # Use team colors for pie slices
+            hole=0.3,
         )])
-    else:  # Bar Chart
-        fig = go.Figure(data=[go.Bar(
-            x=top_scorers['Player'],
-            y=top_scorers['PTS'],
-            hovertemplate="<b>%{x}</b><br>" +
-                          "Points per Game: %{y:.1f}<br>" +
-                          "%{text}" +
-                          "<extra></extra>",
-            text=hover_text,
-            marker_color=colors  # Use team colors for bars
-        )])
-        fig.update_xaxes(title_text="Player")
-        fig.update_yaxes(title_text="Points per Game")
+        fig.update_traces(textfont_size=12)
+        fig.update_layout(
+            title=f"Top 5 Players - {selected_stat} Distribution",
+            showlegend=False,
+        )
 
     fig.update_layout(
-        title="Top Scorers",
-        height=400,  # Increase the height of the chart
-        plot_bgcolor='rgba(0,0,0,0.1)',
-        paper_bgcolor='rgba(0,0,0,0.1)',
-        font=dict(color="white", size=14),
-        showlegend=True,
-        legend=dict(
-            bgcolor="rgba(0,0,0,0.5)",
-            bordercolor="white",
-            borderwidth=1
-        )
+        height=400,
+        margin=dict(l=0, r=0, t=40, b=0),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(color="white"),
     )
-    
-    selected_points = plotly_events(fig, click_event=True, override_height=400)
-    
-    if selected_points:
-        selected_player = selected_points[0]['label'] if chart_type == "Pie Chart" else selected_points[0]['x']
-        update_selected_player(selected_player)
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 with col2:
     st.markdown('<div class="stats-section">', unsafe_allow_html=True)
-    st.markdown("### Chart Filters")
-    min_points = st.slider("Minimum Points", min_value=0, max_value=int(top_scorers['PTS'].max()), value=0)
-    filtered_top_scorers = top_scorers[top_scorers['PTS'] >= min_points]
-
-    st.markdown("### Quick Stats")
-    if not filtered_top_scorers.empty:
-        st.metric("Average Points", f"{filtered_top_scorers['PTS'].mean():.1f}")
-        highest_scorer = filtered_top_scorers.loc[filtered_top_scorers['PTS'].idxmax()]
-        st.metric("Highest Scorer", f"{highest_scorer['Player']} ({highest_scorer['PTS']:.1f} pts)")
-        st.metric("Players Shown", f"{len(filtered_top_scorers)}")
+    st.markdown("Quick Stats")
+    if not top_players.empty:
+        st.metric(f"Average {selected_stat}", f"{top_players[stat_column].mean():.2f}")
+        highest_player = top_players.loc[top_players[stat_column].idxmax()]
+        st.metric(f"Highest {selected_stat}", f"{highest_player['Player']} ({highest_player[stat_column]:.2f})")
+        st.metric("Players Shown", f"{len(top_players)}")
     else:
         st.warning("No players match the current filter.")
     
-    st.markdown("### Top Scorers")
-    # Ensure PTS is numeric and round to 1 decimal place
-    filtered_top_scorers['PTS'] = pd.to_numeric(filtered_top_scorers['PTS'], errors='coerce').round(1)
+    st.markdown(f"### Top {selected_stat}")
+    # Ensure the selected stat is numeric and round to 2 decimal places
+    top_players[stat_column] = pd.to_numeric(top_players[stat_column], errors='coerce').round(2)
 
     # Create a custom style function
     def color_team(val):
@@ -317,101 +519,144 @@ with col2:
         return f'color: {color}; font-weight: bold;'
 
     # Apply the style to the dataframe
-    styled_df = filtered_top_scorers[["Player", "PTS", "Team"]].style\
+    styled_df = top_players[["Player", stat_column, "Team"]].style\
         .set_properties(**{'background-color': '#f0f0f0'})\
-        .applymap(color_team, subset=['Player', 'Team'])\
-        .applymap(lambda x: 'color: black; font-weight: bold;', subset=['PTS'])\
-        .format({'PTS': '{:.1f}'})
+        .map(color_team, subset=['Player', 'Team'])\
+        .map(lambda x: 'color: black; font-weight: bold;', subset=[stat_column])\
+        .format({stat_column: '{:.2f}'})
 
     # Use st.write instead of st.dataframe for better style rendering
     st.write(styled_df)
     st.markdown('</div>', unsafe_allow_html=True)
 
 with col3:
-    st.markdown('<div class="player-info-section">', unsafe_allow_html=True)
-    if st.session_state.selected_player:
-        player_data = filtered_top_scorers[filtered_top_scorers['Player'] == st.session_state.selected_player].iloc[0]
-        st.subheader(f"Selected Player: {st.session_state.selected_player}")
-        image_path = f"player_images/{st.session_state.selected_player.lower().replace(' ', '_')}.jpg"
-        if os.path.exists(image_path):
-            st.image(image_path, caption=st.session_state.selected_player, width=200)
-        else:
-            st.image("placeholder.jpg", caption="Player image not available", width=200)
+    st.markdown('<div class="ai-insights-section">', unsafe_allow_html=True)
+    st.subheader("🤖 AI Insights")
+    
+    # Check if the button is clicked (you'll need to implement this logic)
+    if st.button("Generate AI🧠 Insights"):
+        with st.spinner("Generating insights..."):
+            top_players = filtered_data.nlargest(10, 'PTS')
+            key_stats = ['Player', 'Team', 'Pos', 'PTS', 'AST', 'TRB', 'STL', 'BLK', 'FG%', '3P%']
+            summary_data = top_players[key_stats]
+            
+            insights = generate_insights(filtered_data)
+            st.subheader("AI-Generated Insights")
+            st.markdown(insights)
+            
+            st.warning("Please note: These insights are AI-generated based on the provided data. Always verify important information.")
+        
     st.markdown('</div>', unsafe_allow_html=True)
+    # st.markdown('<div class="map-section">', unsafe_allow_html=True)
+    # st.subheader("🗺️📍WNBA Team Locations")
+    
+    # # Debug: Check if create_wnba_map() is working
+    # try:
+    #     wnba_map = create_wnba_map()
+    #     st.write("Map created successfully")
+    # except Exception as e:
+    #     st.error(f"Error creating map: {str(e)}")
+
+    # # Try to display the map
+    # try:
+    #     st_folium(wnba_map, width=600, height=400)
+    # except Exception as e:
+    #     st.error(f"Error displaying map: {str(e)}")
+
+    # # Add a caption below the map
+    # st.caption("Click on a marker to learn more about each team.")
 
 with col4:
-    st.markdown('<div class="player-stats-section">', unsafe_allow_html=True)
-    if st.session_state.selected_player:
-        st.subheader("Player Stats")
-        st.write(f"Team: {player_data['Team']}")
-        st.write(f"Position: {player_data['Pos']}")
-        st.write(f"Points per Game: {player_data['PTS']:.1f}")
-        st.write(f"Assists per Game: {player_data['AST']:.1f}")
-        st.write(f"Rebounds per Game: {player_data['TRB']:.1f}")
-        # Add more stats as needed
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Display filtered data
+    st.markdown('<div class="filtered-data-section">', unsafe_allow_html=True)
+    st.subheader("Filtered Player Data")
+    st.markdown(f"**🔍 Dataset: {filtered_data.shape[0]} rows and {filtered_data.shape[1]} columns.**")
+    # Format numeric columns
+    numeric_columns = filtered_data.select_dtypes(include=['float64', 'int64']).columns
+    formatter = {}
+    for col in numeric_columns:
+        if col == 'PTS':
+            formatter[col] = '{:.0f}'.format
+        else:
+            formatter[col] = '{:.2f}'.format
 
-# Display filtered data
-st.subheader("Filtered Player Data")
-st.markdown(f"**🔍 Dataset: {filtered_data.shape[0]} rows and {filtered_data.shape[1]} columns.**")
-st.dataframe(filtered_data.style.background_gradient(cmap='coolwarm', subset=['PTS', 'AST', 'TRB']))
+        # Apply the formatting and style the dataframe
+        styled_data = (filtered_data.style
+                    .format(formatter)
+                    .background_gradient(cmap='coolwarm', subset=['PTS', 'AST', 'TRB'])
+                    .set_properties(**{'text-align': 'center'})
+                    .set_table_styles([dict(selector='th', props=[('text-align', 'center')])])
+        )
+        # Display the styled dataframe
+        st.dataframe(styled_data, height=400)
+        # CSV download function
+        def get_csv_download_link(df):
+            csv = df.to_csv(index=False)
+            b64 = base64.b64encode(csv.encode()).decode()
+            return f'<a href="data:file/csv;base64,{b64}" download="wnba_stats.csv">Download CSV</a>'
 
-# CSV download function
-def get_csv_download_link(df):
-    csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    return f'<a href="data:file/csv;base64,{b64}" download="wnba_stats.csv">Download CSV</a>'
+        st.markdown(get_csv_download_link(filtered_data), unsafe_allow_html=True)
+st.markdown('<div class="player-comparison-section">', unsafe_allow_html=True)
+st.subheader("🏀 Player Comparison")
 
-st.markdown(get_csv_download_link(filtered_data), unsafe_allow_html=True)
+# Allow users to select players to compare
+players = player_data['Player'].unique()
+player1 = st.selectbox("Select first player", players, key='player1')
+player2 = st.selectbox("Select second player", players, key='player2')
 
-# After displaying the data and visualizations
-if st.button("Generate AI Insights"):
-    with st.spinner("Generating insights..."):
-        top_players = filtered_data.nlargest(10, 'PTS')
-        key_stats = ['Player', 'Team', 'Pos', 'PTS', 'AST', 'TRB', 'STL', 'BLK', 'FG%', '3P%']
-        summary_data = top_players[key_stats]
-        
-        insights = generate_insights(filtered_data)
-        st.subheader("AI-Generated Insights")
-        st.markdown(insights)
-        
-        st.warning("Please note: These insights are AI-generated based on the provided data. Always verify important information.")
+if player1 and player2:
+    # Get data for selected players
+    stats1 = player_data[player_data['Player'] == player1].iloc[0]
+    stats2 = player_data[player_data['Player'] == player2].iloc[0]
+
+    # Select stats to compare
+    stats_to_compare = ['PTS', 'AST', 'TRB', 'STL', 'BLK', 'FG%', '3P%', 'FT%']
+
+    # Create a radar chart
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatterpolar(
+        r=[stats1[stat] for stat in stats_to_compare],
+        theta=stats_to_compare,
+        fill='toself',
+        name=player1
+    ))
+    fig.add_trace(go.Scatterpolar(
+        r=[stats2[stat] for stat in stats_to_compare],
+        theta=stats_to_compare,
+        fill='toself',
+        name=player2
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, max(max(stats1[stats_to_compare]), max(stats2[stats_to_compare]))]
+            )),
+        showlegend=True
+    )
+
+    st.plotly_chart(fig)
+
+    # Display a table with the exact values
+    comparison_df = pd.DataFrame({
+        'Stat': stats_to_compare,
+        player1: [stats1[stat] for stat in stats_to_compare],
+        player2: [stats2[stat] for stat in stats_to_compare]
+    })
+    st.table(comparison_df)
+
+
+
 
 # Add the sticky footer
 st.markdown(
     """
     <div class="sticky-footer">
-        Made with ❤️ w/ Cloudflare Workers AI in SF 
+        Made with ❤️ w/ Cloudflare Workers AI in SF\n\n <a href="https://github.com/elizabethsiegle/wnba-analytics-dash-ai-insights">Code here on GitHub</a>
     </div>
     """,
     unsafe_allow_html=True
 )
 
-# # Add a chat interface for questions
-# st.subheader("Ask about the data")
-# user_question = st.text_input("Enter your question about the WNBA data:")
-
-# if user_question:
-#     prompt = f"""
-#     Given the WNBA player statistics for the {selected_season} season, answer the following question:
-#     {user_question}
-    
-#     Use the following data to inform your answer:
-#     {filtered_data.to_string()}
-#     """
-    
-#     with st.spinner("Generating answer..."):
-#         response = requests.post(
-#             f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/meta/llama-3.2-11b-vision-instruct",
-#             headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
-#             json={
-#                 "messages": [
-#                     {"role": "system", "content": "You are a helpful assistant that answers questions about WNBA player statistics."},
-#                     {"role": "user", "content": prompt}
-#                 ]
-#             }
-#         )
-#         result = response.json()
-#         answer = result['result']['response']
-#         st.markdown(f"**Question:** {user_question}")
-#         st.markdown(f"**Answer:** {answer}")
