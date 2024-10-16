@@ -29,6 +29,15 @@ st.set_page_config(page_title="WNBA Player Analytics Dashboard && AI Insights", 
 # Enhanced Custom CSS with gradient background, hover effects, and sticky footer
 st.markdown("""
 <style>
+    .hover-link {
+        color: #1E90FF;  /* Initial color - dodger blue */
+        text-decoration: none;
+        transition: color 0.3s ease;
+    }
+    .hover-link:hover {
+        color: #FF4500;  /* Hover color - orange red */
+        text-decoration: underline;
+    }
     [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
         background-color: #2C3E50;
         padding: 20px;
@@ -203,7 +212,7 @@ st.markdown(
         <h1 style="margin-bottom: 20px; font-size: 3em;">WNBA Player Analytics Dashboard && AI Insights</h1>
         <p style="max-width: 800px; margin-bottom: 20px; font-size: 1.8em; line-height: 1.6;">
             Explore comprehensive WNBA player statistics with this interactive dashboard.
-            <br><strong>Data Source:</strong> <a href="https://www.basketball-reference.com/" target="_blank">Basketball-reference.com</a>
+            <br><strong>Data Source:</strong> <a href="https://www.basketball-reference.com/" target="_blank" class="hover-link">Basketball-reference.com</a>
         </p>
         <p style="font-style: italic; color: #f1c40f; font-size: 1.8em;">
             🔍 Use the sidebar to refine your search
@@ -337,6 +346,7 @@ def geocode_with_retry(geolocator, city, max_retries=3):
             time.sleep(1)
     return None
 
+@st.cache_data
 def create_wnba_map():
     # WNBA teams, their locations, and home page URLs
     wnba_teams = {
@@ -547,24 +557,6 @@ with col3:
             st.warning("Please note: These insights are AI-generated based on the provided data. Always verify important information.")
         
     st.markdown('</div>', unsafe_allow_html=True)
-    # st.markdown('<div class="map-section">', unsafe_allow_html=True)
-    # st.subheader("🗺️📍WNBA Team Locations")
-    
-    # # Debug: Check if create_wnba_map() is working
-    # try:
-    #     wnba_map = create_wnba_map()
-    #     st.write("Map created successfully")
-    # except Exception as e:
-    #     st.error(f"Error creating map: {str(e)}")
-
-    # # Try to display the map
-    # try:
-    #     st_folium(wnba_map, width=600, height=400)
-    # except Exception as e:
-    #     st.error(f"Error displaying map: {str(e)}")
-
-    # # Add a caption below the map
-    # st.caption("Click on a marker to learn more about each team.")
 
 with col4:
     # Display filtered data
@@ -596,58 +588,138 @@ with col4:
             return f'<a href="data:file/csv;base64,{b64}" download="wnba_stats.csv">Download CSV</a>'
 
         st.markdown(get_csv_download_link(filtered_data), unsafe_allow_html=True)
-st.markdown('<div class="player-comparison-section">', unsafe_allow_html=True)
-st.subheader("🏀 Player Comparison")
 
-# Allow users to select players to compare
-players = player_data['Player'].unique()
-player1 = st.selectbox("Select first player", players, key='player1')
-player2 = st.selectbox("Select second player", players, key='player2')
+# Create two main columns for the sections
+col1, col2 = st.columns(2)    
+with col1:
+    st.markdown('<div class="player-comparison-section">', unsafe_allow_html=True)
+    st.subheader("🏀 Player Comparison")
 
-if player1 and player2:
-    # Get data for selected players
-    stats1 = player_data[player_data['Player'] == player1].iloc[0]
-    stats2 = player_data[player_data['Player'] == player2].iloc[0]
+    # Allow users to select players to compare
+    players = player_data['Player'].unique()
 
-    # Select stats to compare
-    stats_to_compare = ['PTS', 'AST', 'TRB', 'STL', 'BLK', 'FG%', '3P%', 'FT%']
+    # Find the indices of Caitlin Clark and Angel Reese
+    caitlin_index = players.tolist().index('Caitlin Clark') if 'Caitlin Clark' in players else 0
+    angel_index = players.tolist().index('Angel Reese') if 'Angel Reese' in players else 0
 
-    # Create a radar chart
-    fig = go.Figure()
+    player1 = st.selectbox("Select first player", players,index=caitlin_index, key='player1')
+    player2 = st.selectbox("Select second player", players, index=angel_index, key='player2')
 
-    fig.add_trace(go.Scatterpolar(
-        r=[stats1[stat] for stat in stats_to_compare],
-        theta=stats_to_compare,
-        fill='toself',
-        name=player1
-    ))
-    fig.add_trace(go.Scatterpolar(
-        r=[stats2[stat] for stat in stats_to_compare],
-        theta=stats_to_compare,
-        fill='toself',
-        name=player2
-    ))
+    def normalize(value, min_value, max_value):
+        try:
+            value = float(value)
+            return 100 * (value - min_value) / (max_value - min_value) if max_value > min_value else 50
+        except (ValueError, TypeError):
+            return 0  # or some default value for non-numeric entries
 
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, max(max(stats1[stats_to_compare]), max(stats2[stats_to_compare]))]
-            )),
-        showlegend=True
-    )
+    if player1 and player2:
+        # Get data for selected players
+        stats1 = player_data[player_data['Player'] == player1].iloc[0]
+        stats2 = player_data[player_data['Player'] == player2].iloc[0]
 
-    st.plotly_chart(fig)
+        # Select stats to compare
+        stats_to_compare = ['PTS', 'AST', 'TRB', 'STL', 'BLK', 'FG%', '3P%', 'FT%']
+        # Convert columns to numeric, replacing non-numeric values with NaN
+        for stat in stats_to_compare:
+            player_data[stat] = pd.to_numeric(player_data[stat], errors='coerce')
 
-    # Display a table with the exact values
-    comparison_df = pd.DataFrame({
-        'Stat': stats_to_compare,
-        player1: [stats1[stat] for stat in stats_to_compare],
-        player2: [stats2[stat] for stat in stats_to_compare]
-    })
-    st.table(comparison_df)
+        normalized_stats = {}
+        for stat in stats_to_compare:
+            min_val = player_data[stat].min()
+            max_val = player_data[stat].max()
+            normalized_stats[stat] = [
+                normalize(stats1[stat], min_val, max_val),
+                normalize(stats2[stat], min_val, max_val)
+            ]
 
+        # Create a radar chart
+        fig = go.Figure()
 
+        fig.add_trace(go.Scatterpolar(
+            r=[normalized_stats[stat][0] for stat in stats_to_compare],
+            theta=stats_to_compare,
+            fill='toself',
+            name=player1
+        ))
+        fig.add_trace(go.Scatterpolar(
+            r=[normalized_stats[stat][1] for stat in stats_to_compare],
+            theta=stats_to_compare,
+            fill='toself',
+            name=player2
+        ))
+
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=True,
+            legend=dict(
+                font=dict(size=16),  # Increase font size
+                itemsizing='constant',  # Make legend items a constant size
+                itemwidth=30,  # Adjust item width
+                yanchor="top",  # Anchor to the top
+                y=0.99,  # Position at the top
+                xanchor="right",  # Anchor to the right
+                x=0.99,  # Position at the left
+                bgcolor="rgba(255, 255, 255, 0.5)",  # Semi-transparent background
+                bordercolor="Black",  # Border color
+                borderwidth=2,  # Border width
+            ),
+            title=dict(
+                text=f"{player1} vs {player2} Comparison",
+                font=dict(size=24)  # Increase title font size
+            ),
+            width=700,  # Adjust as needed
+            height=700  # Adjust as needed
+        )
+        # Create three columns with the middle one being wider
+        left_col, middle_col, right_col = st.columns([1, 3, 1])
+
+        # Use the middle column to display the chart
+        with middle_col:
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Display a table with the exact values
+        comparison_df = pd.DataFrame({
+            'Stat': stats_to_compare,
+            player1: [stats1[stat] for stat in stats_to_compare],
+            player2: [stats2[stat] for stat in stats_to_compare]
+        })
+        st.table(comparison_df)
+
+with col2:
+    st.markdown('<div class="map-section">', unsafe_allow_html=True)
+    st.subheader("🗺️📍WNBA Team Locations")
+
+    # Custom CSS to center the map
+    st.markdown("""
+    <style>
+    .map-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Debug: Check if create_wnba_map() is working
+    try:
+        wnba_map = create_wnba_map()
+        # Removed the success message to save space
+    except Exception as e:
+        st.error(f"Error creating map: {str(e)}")
+
+    # Try to display the map
+    try:
+        # Wrap the map in a centered div
+        st.markdown('<div class="map-container">', unsafe_allow_html=True)
+        st_folium(wnba_map, width=700, height=500)  # Increased size
+        st.markdown('</div>', unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error displaying map: {str(e)}")
+
+    # Add a caption below the map
+    st.caption("Click on a marker to learn more about each team.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # Add the sticky footer
