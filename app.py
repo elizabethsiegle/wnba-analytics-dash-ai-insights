@@ -4,8 +4,9 @@ import folium
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+import json
 from langchain_community.llms.cloudflare_workersai import CloudflareWorkersAI
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from langchain_core.runnables import RunnablePassthrough
 import os
@@ -24,8 +25,8 @@ import webcolors
 load_dotenv()
 
 # Cloudflare Workers AI setup
-ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID') # st.secrets["CF_ACCOUNT_ID"] # 
-AUTH_TOKEN = os.getenv('CF_AUTH_TOKEN') # st.secrets["CF_AUTH_TOKEN"] # 
+ACCOUNT_ID = st.secrets["CF_ACCOUNT_ID"] # os.getenv('CF_ACCOUNT_ID')  
+AUTH_TOKEN = st.secrets["CF_AUTH_TOKEN"] # os.getenv('CF_AUTH_TOKEN') 
 
 # Updated Page configuration
 st.set_page_config(page_title="WNBA Player Analytics Dashboard, AI Insights, && AI Assistant", page_icon="🏀", layout="wide")
@@ -179,28 +180,23 @@ st.markdown("""
 def encode_image(img_path):
     return base64.b64encode(Path(img_path).read_bytes()).decode()
 
-def generate_insights(data):
-    # Select top 10 players by points
-    top_players = data.nlargest(10, 'PTS')
-    
-    # Select key statistics
-    key_stats = ['Player', 'Team', 'Pos', 'PTS', 'AST', 'TRB', 'STL', 'BLK', 'FG%', '3P%']
-    summary_data = top_players[key_stats]
-    
-    prompt = f"""
-    Analyze the following WNBA player statistics:
-    {summary_data.to_string(index=False)}
+def generate_insights(data_series):
+    # Convert the series to a dictionary for easier JSON serialization
+    data_dict = data_series.to_dict()
+    data_str = json.dumps(data_dict)
+    prompt_template = PromptTemplate(
+        input_variables=["data", "stat"],
+        template="""
+        You are a WNBA analytics expert. Analyze the following top player data for the {stat} statistic and provide 3-5 insightful observations:
 
-    Provide 3 insights, opinions, observations or hot takes about this data, focusing on scoring, efficiency, and overall performance trends with no preamble.
-    For each insight:
-    1. State the observation clearly.
-    2. Provide specific data points from the table to support your observation.
-    3. Explain the significance of this observation in the context of basketball.
+        {data}
 
-    Format your response as a numbered list, with each insight clearly separated.
-    Do not make any claims that cannot be directly supported by the data provided.
-    If you're unsure about a claim, state that it's a possibility rather than a certainty.
-    """
+        Focus on standout performances, interesting comparisons, or notable trends related to {stat}. 
+        Your insights should be clear, concise, and relevant to WNBA fans and analysts.
+        """
+    )
+    
+    prompt = prompt_template.format(data=data_str, stat=st.session_state.stat_column)
     
     response = requests.post(
         f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct-fast",
@@ -425,6 +421,11 @@ def create_wnba_map():
 # Initialize session state for selected player
 if 'selected_player' not in st.session_state:
     st.session_state.selected_player = None
+# Near the top of your app, after initializing session state
+if 'top_players' not in st.session_state:
+    st.session_state.top_players = None
+if 'stat_column' not in st.session_state:
+    st.session_state.stat_column = None
 
 # Function to update selected player
 def update_selected_player(player):
@@ -448,7 +449,6 @@ stat_options = {
 # Create a 2x2 grid layout
 col1, col2 = st.columns(2)
 col3, col4 = st.columns(2)
-
 with col1:
     st.markdown('<div class="chart-section">', unsafe_allow_html=True)
     st.markdown("Player Statistics")
@@ -473,8 +473,11 @@ with col1:
     # Filter the data based on the slider value
     filtered_data = filtered_data[filtered_data[stat_column] >= min_stat_value]
 
-    # Get top 5 players after filtering
+    # Get top 5 players after filtering)
     top_players = filtered_data.nlargest(5, stat_column)
+    # Where you currently define top_players (around line 471)
+    st.session_state.top_players = filtered_data.nlargest(10, stat_column)
+    st.session_state.stat_column = stat_column
     
     hover_text = [f"{player}<br>Team: {team}<br>Position: {pos}<br>{selected_stat}: {value:.2f}" 
                   for player, team, pos, value in zip(top_players['Player'], top_players['Team'], top_players['Pos'], top_players[stat_column])]
@@ -556,13 +559,17 @@ with col3:
     st.subheader("🤖 AI Insights")
     
     # Check if the button is clicked (you'll need to implement this logic)
-    if st.button("Generate AI🧠 Insights"):
+    if st.button("Generate AI🧠 Insights about the above chart📈"):
         with st.spinner("Generating insights..."):
-            top_players = filtered_data.nlargest(10, 'PTS')
-            key_stats = ['Player', 'Team', 'Pos', 'PTS', 'AST', 'TRB', 'STL', 'BLK', 'FG%', '3P%']
-            summary_data = top_players[key_stats]
-            
-            insights = generate_insights(filtered_data)
+            if st.session_state.top_players is not None and st.session_state.stat_column is not None:
+                # Create a DataFrame with player names and their statistic values
+                player_stats = st.session_state.top_players[['Player', st.session_state.stat_column]].head(5).copy() # top 5
+                
+                # Set the index to be the player names
+                player_stats.set_index('Player', inplace=True)
+                insights = generate_insights(player_stats)
+            else:
+                st.warning("Please select a statistic and generate top players first.")
             st.subheader("AI-Generated Insights")
             st.markdown(insights)
             
