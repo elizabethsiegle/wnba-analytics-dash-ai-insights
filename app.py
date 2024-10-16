@@ -222,7 +222,7 @@ st.markdown(
         <img src='data:image/png;base64,{encode_image('wnba-logo.png')}' class='img-fluid' style="max-width: 200px; margin-bottom: 20px;">
         <h1 style="margin-bottom: 20px; font-size: 3em;">WNBA Player Analytics Dashboard, AI Insights, && AI Assistant</h1>
         <p style="max-width: 800px; margin-bottom: 20px; font-size: 1.8em; line-height: 1.6;">
-            Explore comprehensive WNBA player statistics with this interactive dashboard, map, and AI Insights and chatbot powered by LangChain and Cloudflare Workers AI.
+            Explore comprehensive WNBA player statistics with this interactive dashboard, map, and AI Insights and chatbot powered by <a href="https://langchain.dev/" target="_blank" class="hover-link">LangChain</a> and <a href="https://developers.cloudflare.com/workers-ai/" target="_blank" class="hover-link">Cloudflare Workers AI</a>.
             <br><strong>Data Source:</strong> <a href="https://www.basketball-reference.com/" target="_blank" class="hover-link">Basketball-reference.com</a>
         </p>
         <p style="font-style: italic; color: #f1c40f; font-size: 1.8em;">
@@ -235,6 +235,7 @@ st.markdown(
 
 # Sidebar controls
 st.sidebar.header('Filter Options')
+st.sidebar.success("Filter players by season, team, and position to explore the data.")
 st.html(
     """
 <style>
