@@ -24,8 +24,8 @@ import webcolors
 load_dotenv()
 
 # Cloudflare Workers AI setup
-ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID')
-AUTH_TOKEN = os.getenv('CF_AUTH_TOKEN')
+ACCOUNT_ID = st.secrets["CF_ACCOUNT_ID"] # os.getenv('CF_ACCOUNT_ID')
+AUTH_TOKEN = st.secrets["CF_AUTH_TOKEN"] # os.getenv('CF_AUTH_TOKEN')
 
 # Updated Page configuration
 st.set_page_config(page_title="WNBA Player Analytics Dashboard, AI Insights, && AI Assistant", page_icon="🏀", layout="wide")
