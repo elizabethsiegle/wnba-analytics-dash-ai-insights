@@ -698,7 +698,7 @@ with col1:
 
 with col2:
     st.markdown('<div class="chatbot-section">', unsafe_allow_html=True)
-    st.subheader("🏀 WNBA AI Assistant powered by LangChain and Cloudflare Workers AI")
+    st.subheader("🏀 Chat💬 w/ WNBA AI Assistant powered by LangChain && Cloudflare Workers AI🤖")
 
     # Add a loading message
     chat_loading = st.empty()
