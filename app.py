@@ -1,32 +1,34 @@
 import base64
 from dotenv import load_dotenv
+import json
+import os
+import requests
+import time
+import webcolors
+
+import streamlit as st
 import folium
 from streamlit_folium import st_folium
+
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-import json
+
+from langchain.memory import ConversationBufferMemory
 from langchain_community.llms.cloudflare_workersai import CloudflareWorkersAI
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-from langchain.memory import ConversationBufferMemory
 from langchain_core.runnables import RunnablePassthrough
-import os
+
+import numpy as np
 import pandas as pd
 from pathlib import Path
 
 import plotly.graph_objects as go
-# import plotly.express as px
-import requests
-import streamlit as st
-import time
-import webcolors
-
-
 
 load_dotenv()
 
 # Cloudflare Workers AI setup
-ACCOUNT_ID = st.secrets["CF_ACCOUNT_ID"] # os.getenv('CF_ACCOUNT_ID')  
-AUTH_TOKEN = st.secrets["CF_AUTH_TOKEN"] # os.getenv('CF_AUTH_TOKEN') 
+ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID')  #  st.secrets["CF_ACCOUNT_ID"] 
+AUTH_TOKEN = os.getenv('CF_AUTH_TOKEN')  # st.secrets["CF_AUTH_TOKEN"] 
 
 # Updated Page configuration
 st.set_page_config(page_title="WNBA Player Analytics Dashboard, AI Insights, && AI Assistant", page_icon="🏀", layout="wide")
@@ -63,27 +65,7 @@ st.markdown("""
         color: white;
         font-family: 'Helvetica Neue', Arial, sans-serif;
     }
-    .stPlotlyChart {
-        transition: transform 0.3s ease-in-out;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        border-radius: 10px;
-        overflow: hidden;
-    }
-    .stPlotlyChart:hover {
-        transform: scale(1.02);
-        box-shadow: 0 8px 12px rgba(0, 0, 0, 0.2);
-    }
-    .sticky-footer {
-        position: fixed;
-        left: 0;
-        bottom: 0;
-        width: 100%;
-        background-color: rgba(44, 62, 80, 0.8);
-        color: white;
-        text-align: center;
-        padding: 10px 0;
-        font-size: 14px;
-    }
+
     .main-content {
         margin-bottom: 50px;
     }
@@ -96,7 +78,7 @@ st.markdown("""
         border-radius: 10px;
         padding: 10px;
     }
-    .chart-section, .stats-section, .chatbot-section, .filtered-data-section, .player-comparison-section {
+    .chart-section, .stats-section, .chatbot-section, .filtered-data-section, .player-comparison-section, .map-section, .ai-insights-section {
         border-radius: 10px;
         padding: 20px;
         margin-bottom: 20px;
@@ -124,7 +106,6 @@ st.markdown("""
         border-radius: 10px;
         padding: 20px;
         margin-bottom: 20px;
-    
     }
 
     .map-section .stfolium {
@@ -173,13 +154,36 @@ st.markdown("""
         position: relative;
         overflow: hidden;
     }
+    .sticky-footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        height: 50px;
+        background-color: #262730;
+        color: #ffffff;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 14px;
+        z-index: 999;
+    }
+    .sticky-footer a {
+        color: #4da6ff;
+        text-decoration: none;
+        margin-left: 5px;
+    }
+    .sticky-footer a:hover {
+        text-decoration: underline;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Image display function
+# Image display function for WNBA logo
 def encode_image(img_path):
     return base64.b64encode(Path(img_path).read_bytes()).decode()
 
+# Given data displayed on the bar or pie chart, generate insights on the selected players and statistics
 def generate_insights(data_series):
     # Convert the series to a dictionary for easier JSON serialization
     data_dict = data_series.to_dict()
@@ -237,24 +241,50 @@ st.html(
 <style>
 [data-testid="stSidebarContent"] {
     color: white;
-    background-color: #B896D4;
+    background-color: #B896D4; #valkyries purple
 }
 </style>
 """
 )
-selected_season = st.sidebar.selectbox('Season', list(reversed(range(1997, 2025))))
+selected_season = st.sidebar.selectbox('Season', list(reversed(range(1997, 2025)))) # selected season from sidebar
 
-# Data fetching function
+# Data fetching function from basketball-reference.com for selected season
 @st.cache_data
 def fetch_player_data(season):
     url = f"https://www.basketball-reference.com/wnba/years/{season}_per_game.html"
     dataframes = pd.read_html(url, header=0)
     df = dataframes[0]
     df = df[df.G != 'G'].fillna(0)  # Remove header rows and fill NaNs
-    return df.drop(['G'], axis=1)
+    df = df.drop(['G'], axis=1)
 
+    # Convert percentage columns to float
+    percentage_columns = ['FG%', '3P%', '2P%', 'eFG%', 'FT%']
+    for col in percentage_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col].astype(str).str.rstrip('%'), errors='coerce') / 100
+
+    # Convert other numeric columns to float
+    numeric_columns = ['Age', 'GS', 'MP', 'FG', 'FGA', '3P', '3PA', '2P', '2PA', 'FT', 'FTA', 'ORB', 'DRB', 'TRB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Ensure 'Player' and 'Team' columns are strings
+    df['Player'] = df['Player'].astype(str)
+    df['Team'] = df['Team'].astype(str)
+
+    # Handle any remaining problematic columns
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].astype(str)
+
+    return df
+
+# Usage
 player_data = fetch_player_data(selected_season)
+# st.dataframe(player_data)
 
+# colorize the multiselect options for teams and positions--unfortunately, not consistent--if you remove a team, the colors change for the remaining teams
 def colorize_multiselect_options(teams: list[str], team_colors: dict[str, str]) -> None:
     rules = ""
 
@@ -273,7 +303,7 @@ def colorize_multiselect_options(teams: list[str], team_colors: dict[str, str]) 
 # Create the teams list, excluding "TOT"
 teams = sorted([team for team in player_data.Team.unique() if team != 'TOT'])
 
-# Define specific team colors
+# Define specific WNBA team colors
 team_colors = {
     'NYL': '#6ECEB2',    # Green for NY Liberty
     'ATL': '#C8102E',
@@ -298,12 +328,13 @@ def get_team_abbr(team_name):
         'Phoenix Mercury': 'PHO', 'Seattle Storm': 'SEA', 'Washington Mystics': 'WAS'
     }
     return abbr_map.get(team_name, '')
-selected_teams = st.sidebar.multiselect('Team', teams, teams)
+
+selected_teams = st.sidebar.multiselect('Team', teams, teams) # select teams from sidebar
 # Apply the colors to the teams in the multiselect
 colorize_multiselect_options(teams, team_colors)
 
-positions = ['C', 'F', 'G', 'F-G', 'C-F']
-selected_positions = st.sidebar.multiselect('Position', positions, positions)
+positions = ['C', 'F', 'G', 'F-G', 'C-F'] # basketball positions
+selected_positions = st.sidebar.multiselect('Position', positions, positions) # select positions from sidebar
 
 # First, remove the duplicate entry for Celeste Taylor
 player_data = player_data[~((player_data['Player'] == 'Celeste Taylor') & (player_data['Team'] == 'Connecticut Sun'))]
@@ -318,6 +349,7 @@ filtered_data = player_data[
 # Move the pie chart above the displayed data
 st.subheader("Top 5 Scorers (Points per Game)")
 
+# function to find the closest color from the webcolors library to the rgb color
 def closest_color(rgb):
     colors = {
         'red': (255, 0, 0), 'blue': (0, 0, 255), 'green': (0, 128, 0),
@@ -433,8 +465,13 @@ def update_selected_player(player):
 
 def clean_percentage(value):
     if isinstance(value, str):
-        return float(value.strip('%')) / 100
-    return value
+        return pd.to_numeric(value.rstrip('%'), errors='coerce') / 100
+    elif pd.isna(value):
+        return np.nan
+    else:
+        return float(value)
+
+player_data['FG%'] = player_data['FG%'].apply(clean_percentage)
 
 stat_options = {
     "Points": "PTS",
@@ -580,7 +617,7 @@ with col3:
 with col4:
     # Display filtered data
     st.markdown('<div class="filtered-data-section">', unsafe_allow_html=True)
-    st.subheader("Filtered Player Data")
+    st.subheader("Filtered Player Data (not just top 5 players)")
     st.markdown(f"**🔍 Dataset: {filtered_data.shape[0]} rows and {filtered_data.shape[1]} columns.**")
     # Format numeric columns
     numeric_columns = filtered_data.select_dtypes(include=['float64', 'int64']).columns
@@ -598,15 +635,15 @@ with col4:
                     .set_properties(**{'text-align': 'center'})
                     .set_table_styles([dict(selector='th', props=[('text-align', 'center')])])
         )
-        # Display the styled dataframe
-        st.dataframe(styled_data, height=400)
-        # CSV download function
-        def get_csv_download_link(df):
-            csv = df.to_csv(index=False)
-            b64 = base64.b64encode(csv.encode()).decode()
-            return f'<a href="data:file/csv;base64,{b64}" download="wnba_stats.csv">Download CSV</a>'
+    # Display the styled dataframe
+    st.dataframe(styled_data, height=400)
+    # CSV download function
+    def get_csv_download_link(df):
+        csv = df.to_csv(index=False)
+        b64 = base64.b64encode(csv.encode()).decode()
+        return f'<a href="data:file/csv;base64,{b64}" download="wnba_stats.csv">Download CSV</a>'
 
-        st.markdown(get_csv_download_link(filtered_data), unsafe_allow_html=True)
+    st.markdown(get_csv_download_link(filtered_data), unsafe_allow_html=True)
 
 # Create two main columns for the sections
 col1, col2 = st.columns(2)    
@@ -850,46 +887,7 @@ with col2:
 
     # Add a caption below the map
     st.caption("Click on a marker to learn more about each team.")
-
     st.markdown('</div>', unsafe_allow_html=True)
-
-
- # Add custom CSS for the sticky footer
-st.markdown(
-    """
-    <style>
-    .reportview-container {
-        flex-direction: column;
-    }
-    .main .block-container {
-        padding-bottom: 70px;
-    }
-    .sticky-footer {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        height: 50px;
-        background-color: #262730;
-        color: #ffffff;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        font-size: 14px;
-        z-index: 999;
-    }
-    .sticky-footer a {
-        color: #4da6ff;
-        text-decoration: none;
-        margin-left: 5px;
-    }
-    .sticky-footer a:hover {
-        text-decoration: underline;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 
 # Add the sticky footer at the end of your app
 st.markdown(
