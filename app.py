@@ -220,7 +220,7 @@ st.markdown(
     f"""
     <div style="display: flex; flex-direction: column; align-items: center; text-align: center;">
         <img src='data:image/png;base64,{encode_image('wnba-logo.png')}' class='img-fluid' style="max-width: 200px; margin-bottom: 20px;">
-        <h1 style="margin-bottom: 20px; font-size: 3em;">WNBA Player Analytics Dashboard && AI Insights</h1>
+        <h1 style="margin-bottom: 20px; font-size: 3em;">WNBA Player Analytics Dashboard, AI Insights, && AI Assistant</h1>
         <p style="max-width: 800px; margin-bottom: 20px; font-size: 1.8em; line-height: 1.6;">
             Explore comprehensive WNBA player statistics with this interactive dashboard, map, and AI Insights and chatbot powered by LangChain and Cloudflare Workers AI.
             <br><strong>Data Source:</strong> <a href="https://www.basketball-reference.com/" target="_blank" class="hover-link">Basketball-reference.com</a>
