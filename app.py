@@ -24,8 +24,8 @@ import webcolors
 load_dotenv()
 
 # Cloudflare Workers AI setup
-ACCOUNT_ID = st.secrets["CF_ACCOUNT_ID"] # os.getenv('CF_ACCOUNT_ID')
-AUTH_TOKEN = st.secrets["CF_AUTH_TOKEN"] # os.getenv('CF_AUTH_TOKEN')
+ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID') # st.secrets["CF_ACCOUNT_ID"] # 
+AUTH_TOKEN = os.getenv('CF_AUTH_TOKEN') # st.secrets["CF_AUTH_TOKEN"] # 
 
 # Updated Page configuration
 st.set_page_config(page_title="WNBA Player Analytics Dashboard, AI Insights, && AI Assistant", page_icon="🏀", layout="wide")
@@ -95,7 +95,7 @@ st.markdown("""
         border-radius: 10px;
         padding: 10px;
     }
-    .chart-section, .stats-section, .map-section, .filtered-data-section, .player-comparison-section {
+    .chart-section, .stats-section, .chatbot-section, .filtered-data-section, .player-comparison-section {
         border-radius: 10px;
         padding: 20px;
         margin-bottom: 20px;
@@ -112,11 +112,18 @@ st.markdown("""
         padding: 20px;
         margin-bottom: 20px;
     }
-    .map-section {
+    .chatbot-section {
         background-color: rgba(255, 69, 0, 0.1);
         border-radius: 10px;
         padding: 20px;
         margin-bottom: 20px;
+    }
+    .map-section {
+        background-color: rgba(144, 238, 144, 0.2);
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
+    
     }
 
     .map-section .stfolium {
@@ -597,7 +604,7 @@ with col4:
 col1, col2 = st.columns(2)    
 with col1:
     st.markdown('<div class="player-comparison-section">', unsafe_allow_html=True)
-    st.subheader("🏀 Player Comparison")
+    st.subheader("🏀 Player Comparison (players must have played in the same season)")
 
     # Allow users to select players to compare
     players = player_data['Player'].unique()
@@ -690,6 +697,119 @@ with col1:
         st.table(comparison_df)
 
 with col2:
+    st.markdown('<div class="chatbot-section">', unsafe_allow_html=True)
+    st.subheader("🏀 WNBA AI Assistant powered by LangChain and Cloudflare Workers AI")
+
+    # Add a loading message
+    chat_loading = st.empty()
+    chat_loading.info("Chat is initializing... This may take a few moments.")
+
+    # Initialize the LLM and conversation chain
+    @st.cache_resource
+    def initialize_chat(filtered_data: pd.DataFrame):
+        llm = CloudflareWorkersAI(
+            account_id=ACCOUNT_ID,
+            api_token=AUTH_TOKEN,
+            model="@cf/meta/llama-2-7b-chat-int8"
+        )
+        # Convert filtered_data to a string representation
+        data_context = filtered_data.to_string()
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a knowledgeable assistant specializing in WNBA statistics, players, and teams. 
+            Provide accurate and helpful information about the WNBA.
+            Here's the current WNBA data you have access to:
+            {data_context}
+            Use this data to answer questions, but don't mention the data directly unless asked."""),
+            ("human", "{input}"),
+            ("ai", "{agent_scratchpad}")
+        ])
+
+        memory = ConversationBufferMemory(return_messages=True, output_key="agent_scratchpad")
+        def get_chat_history(inputs):
+            return memory.chat_memory.messages
+
+        chain = (
+            RunnablePassthrough.assign(
+                agent_scratchpad=get_chat_history,
+                data_context=lambda _: data_context[:100] + "..." # Truncate for brevity 
+            )
+            | prompt
+            | llm
+        )
+
+        return chain, memory, data_context
+
+    # Initialize the chat
+    chain, memory, data_context = initialize_chat(filtered_data)
+
+    # Remove the loading message
+    chat_loading.empty()
+
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display chat messages from history on rerun
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # React to user input
+    if user_input := st.chat_input("Ask me anything about WNBA stats, players, or teams!"):
+        # Display user message in chat message container
+        st.chat_message("user").markdown(user_input)
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": user_input})
+
+        # Get AI response
+        with st.spinner("Thinking..."):
+            try:
+                response = chain.invoke({
+                    "input": user_input,
+                    "data_context": data_context
+                })
+                
+                if not response or response.strip() == "":
+                    response = "I apologize, but I couldn't generate a response. This could be due to an issue with the AI model or the input. Please try asking your question in a different way or try again later."
+            except Exception as e:
+                response = f"An error occurred: {str(e)}"
+                st.error(f"Debug: Error details: {e}")
+        
+        # After getting the response from the model
+        if isinstance(response, list) and len(response) > 0 and hasattr(response[0], 'content'):
+            response_text = response[0].content
+        elif isinstance(response, dict) and 'content' in response:
+            response_text = response['content']
+        elif isinstance(response, str):
+            response_text = response
+        else:
+            response_text = str(response)
+
+
+        # Display assistant response in chat message container
+        with st.chat_message("assistant"):
+            st.markdown(response_text)
+        # Add assistant response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
+        
+        # Update memory
+        memory.chat_memory.add_user_message(user_input)
+        memory.chat_memory.add_ai_message(response_text)
+
+
+        # Add some styling to make the chat interface look better
+        st.markdown("""
+        <style>
+        .stChatFloatingInputContainer {
+            bottom: 20px;
+            background-color: #f0f2f6;
+            padding: 10px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        </style>
+        """, unsafe_allow_html=True)
     st.markdown('<div class="map-section">', unsafe_allow_html=True)
     st.subheader("🗺️📍WNBA Team Locations")
 
@@ -726,116 +846,49 @@ with col2:
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# At the bottom of your app, add this code for the chatbot
-st.markdown("---")  # Add a horizontal line to separate the chatbot
-st.subheader("🏀 WNBA AI Assistant powered by LangChain and Cloudflare Workers AI")
+ # Add custom CSS for the sticky footer
+st.markdown(
+    """
+    <style>
+    .reportview-container {
+        flex-direction: column;
+    }
+    .main .block-container {
+        padding-bottom: 70px;
+    }
+    .sticky-footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        height: 50px;
+        background-color: #262730;
+        color: #ffffff;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 14px;
+        z-index: 999;
+    }
+    .sticky-footer a {
+        color: #4da6ff;
+        text-decoration: none;
+        margin-left: 5px;
+    }
+    .sticky-footer a:hover {
+        text-decoration: underline;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-# Add a loading message
-chat_loading = st.empty()
-chat_loading.info("Chat is initializing... This may take a few moments.")
-
-# Initialize the LLM and conversation chain
-@st.cache_resource
-def initialize_chat(filtered_data: pd.DataFrame):
-    llm = CloudflareWorkersAI(
-        account_id=ACCOUNT_ID,
-        api_token=AUTH_TOKEN,
-        model="@cf/meta/llama-2-7b-chat-int8"
-    )
-    # Convert filtered_data to a string representation
-    data_context = filtered_data.to_string()
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a knowledgeable assistant specializing in WNBA statistics, players, and teams. 
-        Provide accurate and helpful information about the WNBA.
-        Here's the current WNBA data you have access to:
-        {data_context}
-        Use this data to answer questions, but don't mention the data directly unless asked."""),
-        ("human", "{input}"),
-        ("ai", "{agent_scratchpad}")
-    ])
-
-    memory = ConversationBufferMemory(return_messages=True, output_key="agent_scratchpad")
-    def get_chat_history(inputs):
-        return memory.chat_memory.messages
-
-    chain = (
-        RunnablePassthrough.assign(
-            agent_scratchpad=get_chat_history,
-            data_context=lambda _: data_context[:100] + "..." # Truncate for brevity  # This ensures data_context is always passed
-        )
-        | prompt
-        | llm
-    )
-
-    return chain, memory, data_context
-
-# Initialize the chat
-chain, memory, data_context = initialize_chat(filtered_data)
-
-# Remove the loading message
-chat_loading.empty()
-
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display chat messages from history on rerun
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# React to user input
-if user_input := st.chat_input("Ask me anything about WNBA stats, players, or teams!"):
-    # Display user message in chat message container
-    st.chat_message("user").markdown(user_input)
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": user_input})
-
-    # Get AI response
-    with st.spinner("Thinking..."):
-        try:
-            response = chain.invoke({
-                "input": user_input,
-                "data_context": data_context[:100] + "..." # Truncate for brevity
-            })
-            
-            if not response or response.strip() == "":
-                response = "I apologize, but I couldn't generate a response. This could be due to an issue with the AI model or the input. Please try asking your question in a different way or try again later."
-        except Exception as e:
-            response = f"An error occurred: {str(e)}"
-            st.error(f"Debug: Error details: {e}")
-
-
-    # Display assistant response in chat message container
-    with st.chat_message("assistant"):
-        st.markdown(response)
-    # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    
-    # Update memory
-    memory.chat_memory.add_user_message(user_input)
-    memory.chat_memory.add_ai_message(response)
-
-
-# Add some styling to make the chat interface look better
-st.markdown("""
-<style>
-.stChatFloatingInputContainer {
-    bottom: 20px;
-    background-color: #f0f2f6;
-    padding: 10px;
-    border-radius: 10px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-</style>
-""", unsafe_allow_html=True)
-
-# Add the sticky footer
+# Add the sticky footer at the end of your app
 st.markdown(
     """
     <div class="sticky-footer">
-        Made with ❤️ w/ Cloudflare Workers AI in SF\n\n <a href="https://github.com/elizabethsiegle/wnba-analytics-dash-ai-insights">Code here on GitHub</a>
+        Made with ❤️ w/ Cloudflare Workers AI in SF 
+        <a href="https://github.com/elizabethsiegle/wnba-analytics-dash-ai-insights" target="_blank">Code here on GitHub</a>
     </div>
     """,
     unsafe_allow_html=True
