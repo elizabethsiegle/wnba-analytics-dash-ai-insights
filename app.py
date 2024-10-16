@@ -28,7 +28,7 @@ ACCOUNT_ID = os.getenv('CF_ACCOUNT_ID')
 AUTH_TOKEN = os.getenv('CF_AUTH_TOKEN')
 
 # Updated Page configuration
-st.set_page_config(page_title="WNBA Player Analytics Dashboard && AI Insights", page_icon="🏀", layout="wide")
+st.set_page_config(page_title="WNBA Player Analytics Dashboard, AI Insights, && AI Assistant", page_icon="🏀", layout="wide")
 
 # Enhanced Custom CSS with gradient background, hover effects, and sticky footer
 st.markdown("""
@@ -215,7 +215,7 @@ st.markdown(
         <img src='data:image/png;base64,{encode_image('wnba-logo.png')}' class='img-fluid' style="max-width: 200px; margin-bottom: 20px;">
         <h1 style="margin-bottom: 20px; font-size: 3em;">WNBA Player Analytics Dashboard && AI Insights</h1>
         <p style="max-width: 800px; margin-bottom: 20px; font-size: 1.8em; line-height: 1.6;">
-            Explore comprehensive WNBA player statistics with this interactive dashboard.
+            Explore comprehensive WNBA player statistics with this interactive dashboard, map, and AI Insights and chatbot powered by LangChain and Cloudflare Workers AI.
             <br><strong>Data Source:</strong> <a href="https://www.basketball-reference.com/" target="_blank" class="hover-link">Basketball-reference.com</a>
         </p>
         <p style="font-style: italic; color: #f1c40f; font-size: 1.8em;">
