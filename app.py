@@ -4,6 +4,10 @@ import folium
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+from langchain_community.llms.cloudflare_workersai import CloudflareWorkersAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.memory import ConversationBufferMemory
+from langchain_core.runnables import RunnablePassthrough
 import os
 import pandas as pd
 from pathlib import Path
@@ -722,6 +726,111 @@ with col2:
     st.markdown('</div>', unsafe_allow_html=True)
 
 
+# At the bottom of your app, add this code for the chatbot
+st.markdown("---")  # Add a horizontal line to separate the chatbot
+st.subheader("🏀 WNBA AI Assistant powered by LangChain and Cloudflare Workers AI")
+
+# Add a loading message
+chat_loading = st.empty()
+chat_loading.info("Chat is initializing... This may take a few moments.")
+
+# Initialize the LLM and conversation chain
+@st.cache_resource
+def initialize_chat(filtered_data: pd.DataFrame):
+    llm = CloudflareWorkersAI(
+        account_id=ACCOUNT_ID,
+        api_token=AUTH_TOKEN,
+        model="@cf/meta/llama-2-7b-chat-int8"
+    )
+    # Convert filtered_data to a string representation
+    data_context = filtered_data.to_string()
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a knowledgeable assistant specializing in WNBA statistics, players, and teams. 
+        Provide accurate and helpful information about the WNBA.
+        Here's the current WNBA data you have access to:
+        {data_context}
+        Use this data to answer questions, but don't mention the data directly unless asked."""),
+        ("human", "{input}"),
+        ("ai", "{agent_scratchpad}")
+    ])
+
+    memory = ConversationBufferMemory(return_messages=True, output_key="agent_scratchpad")
+    def get_chat_history(inputs):
+        return memory.chat_memory.messages
+
+    chain = (
+        RunnablePassthrough.assign(
+            agent_scratchpad=get_chat_history,
+            data_context=lambda _: data_context[:100] + "..." # Truncate for brevity  # This ensures data_context is always passed
+        )
+        | prompt
+        | llm
+    )
+
+    return chain, memory, data_context
+
+# Initialize the chat
+chain, memory, data_context = initialize_chat(filtered_data)
+
+# Remove the loading message
+chat_loading.empty()
+
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display chat messages from history on rerun
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# React to user input
+if user_input := st.chat_input("Ask me anything about WNBA stats, players, or teams!"):
+    # Display user message in chat message container
+    st.chat_message("user").markdown(user_input)
+    # Add user message to chat history
+    st.session_state.messages.append({"role": "user", "content": user_input})
+
+    # Get AI response
+    with st.spinner("Thinking..."):
+        try:
+            response = chain.invoke({
+                "input": user_input,
+                "data_context": data_context[:100] + "..." # Truncate for brevity
+            })
+            
+            if not response or response.strip() == "":
+                response = "I apologize, but I couldn't generate a response. This could be due to an issue with the AI model or the input. Please try asking your question in a different way or try again later."
+        except Exception as e:
+            response = f"An error occurred: {str(e)}"
+            st.error(f"Debug: Error details: {e}")
+
+
+    # Display assistant response in chat message container
+    with st.chat_message("assistant"):
+        st.markdown(response)
+    # Add assistant response to chat history
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    
+    # Update memory
+    memory.chat_memory.add_user_message(user_input)
+    memory.chat_memory.add_ai_message(response)
+
+
+# Add some styling to make the chat interface look better
+st.markdown("""
+<style>
+.stChatFloatingInputContainer {
+    bottom: 20px;
+    background-color: #f0f2f6;
+    padding: 10px;
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Add the sticky footer
 st.markdown(
     """
@@ -731,4 +840,3 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
